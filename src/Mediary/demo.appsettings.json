@@ -1,0 +1,32 @@
+{
+    "Logging": {
+        "LogLevel": {
+            "Default": "Information",
+            "Microsoft.AspNetCore": "Warning"
+        }
+    },
+    "AllowedHosts": "*",
+    "Mediary": {
+        "Port": 1883,
+        "Users": [
+            {
+                "ClientId": "juliet",
+                "UserName": "juliet",
+                "Password": "jul13t"
+            },
+            {
+                "ClientId": "romeo",
+                "UserName": "romeo",
+                "Password": "r0m30"
+            }
+        ],
+        "DelayInMilliSeconds": 30000,
+        "TlsPort": 8883,
+        "BridgeUrl": "mqtt.googleapis.com",
+        "BridgePort": 8883,
+        "BridgeUser": {
+            "ClientId": "<YOUR_CLIENT_ID>",
+            "PrivateKey": "<YOUR_BASE64_PRIVATE_KEY>"
+        }
+    }
+}
