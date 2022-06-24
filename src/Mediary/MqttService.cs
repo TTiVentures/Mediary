@@ -25,6 +25,9 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     IMqttClientDisconnectedHandler, IMqttApplicationMessageReceivedHandler
 
 {
+
+    private JwtResponse authRequest;
+
     /// <summary>
     /// The logger.
     /// </summary>
@@ -205,7 +208,19 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     /// <param name="context">The context.</param>
     public async Task InterceptApplicationMessagePublishAsync(MqttApplicationMessageInterceptorContext context)
     {
-        try
+        string[] topicDecode = context.ApplicationMessage.Topic.Split('/');
+
+        if (topicDecode[2] == null)
+        {
+            this.logger.LogWarning($"Invalid topic \"{context.ApplicationMessage.Topic}\" from client \"{context.ClientId}\": ClientId is not present");
+            context.AcceptPublish = false;
+        }
+        else if (context.ClientId != topicDecode[2])
+        {
+            this.logger.LogWarning($"Invalid topic \"{context.ApplicationMessage.Topic}\" from client \"{context.ClientId}\": ClientId missmatch");
+            context.AcceptPublish = false;
+        }
+        else
         {
             this.logger.LogDebug(
                 "Received message from device: ClientId = {ClientId}, Topic = {Topic}, QoS = {QoS}, Retain = {Retain}",
@@ -213,21 +228,23 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
                 context.ApplicationMessage.Topic,
                 context.ApplicationMessage.QualityOfServiceLevel,
                 context.ApplicationMessage.Retain);
-
-            var status = await this.mqttClient!.PublishAsync(context.ApplicationMessage, this.cancellationToken);
-
-            if (status.ReasonCode == MqttClientPublishReasonCode.Success)
+            try
             {
-                context.AcceptPublish = true;
+                var status = await this.mqttClient!.PublishAsync(context.ApplicationMessage, this.cancellationToken);
+
+                if (status.ReasonCode == MqttClientPublishReasonCode.Success)
+                {
+                    context.AcceptPublish = true;
+                }
+                else
+                {
+                    context.AcceptPublish = false;
+                }
             }
-            else
+            catch (Exception ex)
             {
-                context.AcceptPublish = false;
+                this.logger.LogError("An error occurred: {Exception}.", ex);
             }
-        }
-        catch (Exception ex)
-        {
-            this.logger.LogError("An error occurred: {Exception}.", ex);
         }
     }
 
@@ -290,8 +307,17 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
 
     public async Task HandleDisconnectedAsync(MqttClientDisconnectedEventArgs eventArgs)
     {
-        this.logger.LogInformation("### DISCONNECTED FROM SERVER ###");
-        await Task.Delay(TimeSpan.FromSeconds(5));
+        this.logger.LogInformation("KO: Disconnected from Google Cloud");
+
+        if (this.authRequest.ExpiresAt > DateTimeOffset.Now.ToUnixTimeSeconds())
+        {
+            this.logger.LogDebug("Expired token: Renew and reconnect");
+        }
+        else
+        {
+            this.logger.LogWarning("EE: Unexpected shutdown, try to reconnect in 15");
+            await Task.Delay(TimeSpan.FromSeconds(15));
+        }
 
         try
         {
@@ -299,15 +325,17 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
         }
         catch
         {
-            this.logger.LogError("### RECONNECTING FAILED ###");
+            this.logger.LogError("EE: Reconnection failure");
         }
     }
 
     private IMqttClientOptions GenerateClientOptions()
     {
+        this.authRequest = JwtHandler.CreateToken(this.MqttServiceConfiguration.BridgeUser.PrivateKey,
+                this.MqttServiceConfiguration.ProjectID);
+
         return new MqttClientOptionsBuilder()
-                .WithCredentials("unused", JwtHandler.CreateToken(this.MqttServiceConfiguration.BridgeUser.PrivateKey, 
-                this.MqttServiceConfiguration.ProjectID).Token)
+                .WithCredentials("unused", this.authRequest.Token)
                 .WithClientId(this.MqttServiceConfiguration.BridgeUser.ClientId)
                 .WithTls(new MqttClientOptionsBuilderTlsParameters
                 {

@@ -42,7 +42,7 @@ namespace Mediary
                     new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
                 },
                 notBefore: now,
-                expires: now.AddSeconds(20),
+                expires: now.AddDays(1),
                 signingCredentials: signingCredentials
             );
 
