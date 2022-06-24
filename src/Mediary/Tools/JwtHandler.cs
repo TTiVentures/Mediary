@@ -18,16 +18,10 @@ namespace Mediary
         public long ExpiresAt { get; set; }
     }
 
-    public static class TypeConverterExtension
-    {
-        public static byte[] ToByteArray(this string value) =>
-         Convert.FromBase64String(value);
-    }
-
     public static class JwtHandler
     {
 
-        public static JwtResponse CreateToken(string key)
+        public static JwtResponse CreateToken(string key, string audience)
         {
             using ECDsa es = ECDsa.Create();
             es.ImportECPrivateKey(Convert.FromBase64String(key), out _);
@@ -41,8 +35,8 @@ namespace Mediary
             var unixTimeSeconds = new DateTimeOffset(now).ToUnixTimeSeconds();
 
             var jwt = new JwtSecurityToken(
-                audience: "<YOUR_PROJECT_ID>",
-                issuer: "<YOUR_PROJECT_ID>",
+                audience: audience,
+                issuer: audience,
                 claims: new Claim[] {
                     new Claim(JwtRegisteredClaimNames.Iat, unixTimeSeconds.ToString(), ClaimValueTypes.Integer64),
                     new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
@@ -61,7 +55,7 @@ namespace Mediary
             };
         }
 
-        public static bool ValidateToken(string token, string key)
+        public static bool ValidateToken(string token, string key, string audience)
         {
 
             using ECDsa es = ECDsa.Create();
@@ -73,8 +67,8 @@ namespace Mediary
                 ValidateAudience = true,
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
-                ValidIssuer = "<YOUR_PROJECT_ID>",
-                ValidAudience = "<YOUR_PROJECT_ID>",
+                ValidIssuer = audience,
+                ValidAudience = audience,
                 IssuerSigningKey = new ECDsaSecurityKey(es),
 
                 CryptoProviderFactory = new CryptoProviderFactory()

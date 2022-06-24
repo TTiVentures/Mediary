@@ -306,7 +306,8 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     private IMqttClientOptions GenerateClientOptions()
     {
         return new MqttClientOptionsBuilder()
-                .WithCredentials("unused", JwtHandler.CreateToken(this.MqttServiceConfiguration.BridgeUser.PrivateKey).Token)
+                .WithCredentials("unused", JwtHandler.CreateToken(this.MqttServiceConfiguration.BridgeUser.PrivateKey, 
+                this.MqttServiceConfiguration.ProjectID).Token)
                 .WithClientId(this.MqttServiceConfiguration.BridgeUser.ClientId)
                 .WithTls(new MqttClientOptionsBuilderTlsParameters
                 {

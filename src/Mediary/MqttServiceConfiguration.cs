@@ -36,6 +36,11 @@ public class MqttServiceConfiguration
     public int BridgePort { get; set; } = 8883;
 
     /// <summary>
+    /// Gets or sets the project id.
+    /// </summary>
+    public string ProjectID { get; set; } = "";
+
+    /// <summary>
     /// Gets or sets the bridge user.
     /// </summary>
     public BridgeUser BridgeUser { get; set; } = new();
@@ -79,6 +84,11 @@ public class MqttServiceConfiguration
         if (this.BridgeUser is default(BridgeUser))
         {
             throw new Exception("The bridge users are invalid.");
+        }
+
+        if (string.IsNullOrEmpty(this.ProjectID))
+        {
+            throw new Exception("The Project Id can not be null.");
         }
 
         return true;
