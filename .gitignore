@@ -35,3 +35,4 @@ InstallFiles.wxs
 node_modules/
 package-lock.json
 src/Mediary/appsettings.json
+src/Mediary/missedMessages.db

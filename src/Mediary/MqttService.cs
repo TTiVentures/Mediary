@@ -28,6 +28,10 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
 
     private JwtResponse authRequest;
 
+    private readonly MessageContext mmContext;
+
+    readonly IDictionary<string, MqttTopicFilter> subscribedTopics = new Dictionary<string, MqttTopicFilter>();
+
     /// <summary>
     /// The logger.
     /// </summary>
@@ -62,10 +66,12 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     /// Initializes a new instance of the <see cref="MqttService"/> class.
     /// </summary>
     /// <param name="mqttServiceConfiguration">The MQTT service configuration.</param>
-    public MqttService(IOptions<MqttServiceConfiguration> mqttServiceConfiguration, ILogger<MqttService> logger)
+    public MqttService(IOptions<MqttServiceConfiguration> mqttServiceConfiguration, ILogger<MqttService> logger, MessageContext mmcontext)
     {
         this.MqttServiceConfiguration = mqttServiceConfiguration.Value;
         this.logger = logger;
+        this.mmContext = mmcontext;
+        this.authRequest = new JwtResponse { ExpiresAt = DateTimeOffset.UnixEpoch.ToUnixTimeSeconds(), Token = "" };
     }
 
     /// <inheritdoc cref="BackgroundService"/>
@@ -178,7 +184,7 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     public async Task InterceptSubscriptionAsync(MqttSubscriptionInterceptorContext context)
     {
         this.logger.LogDebug(
-            "Received subscription from device: ClientId = {ClientId}, Topic = {Topic}, QoS = {QualityOfServiceLevel}",
+            "Received subscription from client: ClientId = {ClientId}, Topic = {Topic}, QoS = {QualityOfServiceLevel}",
             context.ClientId,
             context.TopicFilter.Topic,
             context.TopicFilter.QualityOfServiceLevel);
@@ -187,6 +193,7 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
             var status = await this.mqttClient.SubscribeAsync(context.TopicFilter);
             if (status.Items.Count > 0)
             {
+                this.subscribedTopics.TryAdd(context.ClientId, context.TopicFilter);
                 context.AcceptSubscription = true;
 
             }
@@ -210,20 +217,29 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     {
         string[] topicDecode = context.ApplicationMessage.Topic.Split('/');
 
-        if (topicDecode[2] == null)
+        // Message from broker: Accepted
+        if (context.ClientId == null)
+        {
+            context.AcceptPublish = true;
+
+        }
+        // Message to broker with malformed Topic: Rejected
+        else if (topicDecode[2] == null)
         {
             this.logger.LogWarning($"Invalid topic \"{context.ApplicationMessage.Topic}\" from client \"{context.ClientId}\": ClientId is not present");
             context.AcceptPublish = false;
         }
+        // Message to broker with unknown client: Rejected
         else if (context.ClientId != topicDecode[2])
         {
             this.logger.LogWarning($"Invalid topic \"{context.ApplicationMessage.Topic}\" from client \"{context.ClientId}\": ClientId missmatch");
             context.AcceptPublish = false;
         }
+        // Message to broker: Accepted
         else
         {
             this.logger.LogDebug(
-                "Received message from device: ClientId = {ClientId}, Topic = {Topic}, QoS = {QoS}, Retain = {Retain}",
+                "Received message from client: ClientId = {ClientId}, Topic = {Topic}, QoS = {QoS}, Retain = {Retain}",
                 context.ClientId,
                 context.ApplicationMessage.Topic,
                 context.ApplicationMessage.QualityOfServiceLevel,
@@ -232,18 +248,33 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
             {
                 var status = await this.mqttClient!.PublishAsync(context.ApplicationMessage, this.cancellationToken);
 
-                if (status.ReasonCode == MqttClientPublishReasonCode.Success)
+                if (status.ReasonCode != MqttClientPublishReasonCode.Success)
                 {
-                    context.AcceptPublish = true;
-                }
-                else
-                {
-                    context.AcceptPublish = false;
+                    this.logger.LogError("Message sending failed: {ReasonString}", status.ReasonString);
+
                 }
             }
-            catch (Exception ex)
+            catch (MQTTnet.Exceptions.MqttCommunicationTimedOutException ex)
             {
-                this.logger.LogError("An error occurred: {Exception}.", ex);
+                this.logger.LogError("Message sending failed: {Exception}.", ex);
+
+            }
+            catch (MQTTnet.Exceptions.MqttCommunicationException)
+            {
+                this.logger.LogError("Message sending failed: Connection to Google Cloud not available");
+
+                this.logger.LogDebug($"Storing missed message in database");
+
+                this.mmContext.Add(new MissedMessages
+                {
+                    Topic = context.ApplicationMessage.Topic,
+                    Payload = context.ApplicationMessage.Payload,
+                    ContentType = context.ApplicationMessage.ContentType,
+                    Dup = context.ApplicationMessage.Dup,
+                    QualityOfServiceLevel = context.ApplicationMessage.QualityOfServiceLevel,
+                    Retain = context.ApplicationMessage.Retain
+                });
+                this.mmContext.SaveChanges();
             }
         }
     }
@@ -256,6 +287,7 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     public async Task HandleClientDisconnectedAsync(MqttServerClientDisconnectedEventArgs eventArgs)
     {
         this.logger.LogInformation($"Device {eventArgs.ClientId} disconected");
+        this.subscribedTopics.Remove(eventArgs.ClientId);
 
         var status = await this.mqttClient.PublishAsync($"/devices/{eventArgs.ClientId}/detach", null, MqttQualityOfServiceLevel.AtLeastOnce);
         if (status.ReasonCode == MqttClientPublishReasonCode.Success)
@@ -301,15 +333,53 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
     public async Task HandleConnectedAsync(MqttClientConnectedEventArgs eventArgs)
     {
         this.logger.LogInformation("OK: Connected to Google Cloud");
-        //await this.mqttClient.SubscribeAsync("/devices/airport/config", MqttQualityOfServiceLevel.AtLeastOnce);
-        await this.mqttClient.SubscribeAsync("/devices/airport/commands/#", MqttQualityOfServiceLevel.AtMostOnce);
+
+        if (this.mqttServer != null)
+        {
+            var clientstatus = await this.mqttServer.GetClientStatusAsync();
+            foreach (var c in clientstatus)
+            {
+                this.logger.LogDebug($"Attaching connected device {c.ClientId}");
+                await this.mqttClient.PublishAsync($"/devices/{c.ClientId}/attach", null, MqttQualityOfServiceLevel.AtLeastOnce);
+
+                if (this.subscribedTopics[c.ClientId] != null)
+                {
+                    this.logger.LogDebug($"Subscribing connected device {c.ClientId} to topic {this.subscribedTopics[c.ClientId].Topic}");
+                    await this.mqttClient.SubscribeAsync(this.subscribedTopics[c.ClientId]);
+                }
+            }
+        }
+
+        List<MissedMessages>? missedMessags = this.mmContext.MissedMessages.ToList();
+
+        foreach (var mm in missedMessags)
+        {
+            this.logger.LogDebug($"Restoring missed message with topic {mm.Topic}");
+
+            var result = await this.mqttClient.PublishAsync(new MqttApplicationMessage
+            {
+                Topic = mm.Topic,
+                Payload = mm.Payload,
+                ContentType = mm.ContentType,
+                Dup = mm.Dup,
+                Retain = mm.Retain,
+            });
+
+            if (result.ReasonCode == MqttClientPublishReasonCode.Success)
+            {
+                this.mmContext.Remove(mm);
+            }
+        };
+
+        this.mmContext.SaveChanges();
+
     }
 
     public async Task HandleDisconnectedAsync(MqttClientDisconnectedEventArgs eventArgs)
     {
         this.logger.LogInformation("KO: Disconnected from Google Cloud");
 
-        if (this.authRequest.ExpiresAt > DateTimeOffset.Now.ToUnixTimeSeconds())
+        if (DateTimeOffset.Now.ToUnixTimeSeconds() > this.authRequest.ExpiresAt)
         {
             this.logger.LogDebug("Expired token: Renew and reconnect");
         }
@@ -364,7 +434,7 @@ public class MqttService : BackgroundService, IMqttServerSubscriptionInterceptor
         this.mqttClient.ApplicationMessageReceivedHandler = this;
         this.mqttClient.DisconnectedHandler = this;
 
-        var conStatus = await this.mqttClient!.ConnectAsync(this.clientOptions, this.cancellationToken);
+        await this.mqttClient!.ConnectAsync(this.clientOptions, this.cancellationToken);
     }
 
     /// <summary>
