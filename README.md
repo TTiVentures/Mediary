@@ -6,6 +6,11 @@ _by [TTI Ventures](https://ttiventures.com/)_
 
 ------------------------------------------------------------------------------
 
+> **Warning**
+> 
+> **IoT Core will be discontinued on Aug. 16, 2023**
+
+
 Mediary is an MQTT bridge designed to work with Google Cloud IoT Core. 
 
 Sometimes there are IoT devices that are not directly connected to the Internet and need to pass through a gateway or bridge to forward messages to the main broker. 
